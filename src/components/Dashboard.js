@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { getFilteredDealers } from '../services/firebase';
+import { getFilteredDealers, getDealers } from '../services/firebase'; // Import getDealers too
 import Icons from '../utils/Icons';
 import { CSVLink } from '../utils/csvExport';
 
@@ -22,50 +22,68 @@ const Dashboard = ({ isMobile }) => {
   
   const itemsPerPage = isMobile ? 5 : 10; // Fewer items per page on mobile
 
-  // Using useCallback to memoize the fetchDealers function
+  // Separate function to calculate summary from ALL dealers
+  const calculateSummary = useCallback(async () => {
+    try {
+      // Always get ALL dealers for summary calculation
+      const allDealers = await getDealers();
+      
+      const verified = allDealers.filter(dealer => dealer.status === 'verified').length;
+      const unverified = allDealers.filter(dealer => dealer.status === 'unverified').length;
+      const pending = allDealers.filter(dealer => !dealer.status || dealer.status === '').length;
+      
+      setSummaryData({
+        totalDealers: allDealers.length,
+        verifiedDealers: verified,
+        unverifiedDealers: unverified,
+        pendingVerification: pending,
+      });
+      
+      // Extract unique cities for filter dropdown from all dealers
+      if (allDealers.length > 0) {
+        const uniqueCities = [...new Set(allDealers.map(dealer => dealer.city))].sort();
+        setCities(uniqueCities);
+      }
+    } catch (error) {
+      console.error("Error calculating summary:", error);
+    }
+  }, []);
+
+  // Function to fetch filtered dealers for display
   const fetchDealers = useCallback(async () => {
     setLoading(true);
     try {
-      // This is the key fix - properly handle 'blank' status for pending verification
+      // Handle status filter mapping
       let statusParam = statusFilter;
       if (statusFilter === 'pending') {
         statusParam = 'blank';
       }
+      
+      console.log('Filtering with:', { status: statusParam, city: cityFilter }); // Debug log
       
       const dealersData = await getFilteredDealers(
         statusParam || null,
         cityFilter || null
       );
       
-      // Calculate summary data
-      const verified = dealersData.filter(dealer => dealer.status === 'verified').length;
-      const unverified = dealersData.filter(dealer => dealer.status === 'unverified').length;
-      const pending = dealersData.filter(dealer => !dealer.status || dealer.status === '').length;
-      
-      setSummaryData({
-        totalDealers: dealersData.length,
-        verifiedDealers: verified,
-        unverifiedDealers: unverified,
-        pendingVerification: pending,
-      });
-      
+      console.log('Filtered dealers received:', dealersData.length); // Debug log
       setDealers(dealersData);
-      
-      // Extract unique cities for filter dropdown
-      if (dealersData.length > 0) {
-        const uniqueCities = [...new Set(dealersData.map(dealer => dealer.city))].sort();
-        setCities(uniqueCities);
-      }
     } catch (error) {
       console.error("Error fetching dealers:", error);
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, cityFilter]); // Dependencies for useCallback
+  }, [statusFilter, cityFilter]);
 
+  // Calculate summary on component mount and when needed
+  useEffect(() => {
+    calculateSummary();
+  }, []); // Only run once on mount
+
+  // Fetch filtered dealers when filters change
   useEffect(() => {
     fetchDealers();
-  }, [fetchDealers]); // fetchDealers is now included in dependency array
+  }, [fetchDealers]);
 
   const handleStatusChange = (e) => {
     setStatusFilter(e.target.value);
@@ -138,7 +156,7 @@ const Dashboard = ({ isMobile }) => {
     <div className="dashboard">
       <h1>Dealer Contact Dashboard</h1>
       
-      {/* Summary Cards */}
+      {/* Summary Cards - always show totals from ALL dealers */}
       <div className="dashboard-summary">
         <div className="summary-card">
           <div className="summary-card-header">
@@ -250,6 +268,17 @@ const Dashboard = ({ isMobile }) => {
         </div>
       )}
       
+      {/* Show current filter status */}
+      {(statusFilter || cityFilter) && (
+        <div className="filter-status" style={{ marginBottom: '1rem', padding: '0.5rem', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
+          <small>
+            Showing: {filteredDealers.length} dealers
+            {statusFilter && ` with status "${statusFilter === 'pending' ? 'Pending Verification' : statusFilter}"`}
+            {cityFilter && ` in "${cityFilter}"`}
+          </small>
+        </div>
+      )}
+      
       {loading ? (
         <div className="loading">
           <div className="spinner"></div>
@@ -293,7 +322,10 @@ const Dashboard = ({ isMobile }) => {
                 ) : (
                   <tr>
                     <td colSpan={isMobile ? 5 : 6} style={{ textAlign: 'center', padding: '2rem' }}>
-                      No dealers found matching your filters
+                      {statusFilter || cityFilter || searchTerm ? 
+                        'No dealers found matching your filters' : 
+                        'No dealers found'
+                      }
                     </td>
                   </tr>
                 )}

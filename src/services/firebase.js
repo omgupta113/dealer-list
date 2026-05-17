@@ -9,7 +9,6 @@ import {
   query, 
   where, 
   orderBy, 
-  // Removed unused imports: limit, startAfter
   deleteDoc,
   getDoc,
   serverTimestamp
@@ -38,9 +37,10 @@ const db = getFirestore(app);
  */
 export const addDealer = async (dealer) => {
   try {
-    // Format data and add timestamps
+    // Ensure status is consistently stored as empty string, not null
     const dealerData = {
       ...dealer,
+      status: dealer.status || '', // Convert null/undefined to empty string
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     };
@@ -108,70 +108,196 @@ export const getDealerById = async (dealerId) => {
  * @returns {Promise<Array>} Array of dealer objects
  */
 export const getFilteredDealers = async (status = null, city = null) => {
+  try {
+    console.log('getFilteredDealers called with:', { status, city }); // Debug log
+    
+    let dealersRef = collection(db, "dealers");
+    let constraints = [];
+    
+    // Handle status filtering
+    if (status === 'blank' || status === 'pending') {
+      // For blank/pending status, query for empty string
+      console.log('Querying for blank/pending status');
+      constraints.push(where("status", "==", ""));
+    } else if (status) {
+      // For specific status values
+      console.log('Querying for status:', status);
+      constraints.push(where("status", "==", status));
+    }
+    
+    // Handle city filtering
+    if (city) {
+      console.log('Adding city filter:', city);
+      constraints.push(where("city", "==", city));
+    }
+    
+    // Always add ordering - but handle cases where we can't combine with where clauses
     try {
-      let dealersRef = collection(db, "dealers");
-      let constraints = [];
-      
-      // Special handling for status filter
-      if (status === 'blank') {
-        // Query for empty status or null status
-        constraints.push(where("status", "in", ["", null]));
-      } else if (status) {
-        // Query for specific status value
-        constraints.push(where("status", "==", status));
-      }
-      
-      if (city) {
-        constraints.push(where("city", "==", city));
-      }
-      
-      // Add ordering
       constraints.push(orderBy("createdAt", "desc"));
       
       if (constraints.length > 0) {
         const q = query(dealersRef, ...constraints);
         const querySnapshot = await getDocs(q);
-        return querySnapshot.docs.map(doc => ({
+        const results = querySnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
           createdAt: doc.data().createdAt ? doc.data().createdAt.toDate() : null,
           updatedAt: doc.data().updatedAt ? doc.data().updatedAt.toDate() : null
         }));
+        
+        console.log('Query results:', results.length, 'dealers'); // Debug log
+        return results;
       } else {
+        console.log('No constraints, returning all dealers');
         return getDealers();
       }
-    } catch (error) {
-      console.error("Error getting filtered dealers: ", error);
-      return [];
+    } catch (orderError) {
+      console.log('Error with orderBy, trying without it:', orderError);
+      
+      // If orderBy fails (can happen with certain where clauses), try without it
+      const constraints_no_order = [];
+      
+      // Re-add constraints without orderBy
+      if (status === 'blank' || status === 'pending') {
+        constraints_no_order.push(where("status", "==", ""));
+      } else if (status) {
+        constraints_no_order.push(where("status", "==", status));
+      }
+      
+      if (city) {
+        constraints_no_order.push(where("city", "==", city));
+      }
+      
+      if (constraints_no_order.length > 0) {
+        const q = query(dealersRef, ...constraints_no_order);
+        const querySnapshot = await getDocs(q);
+        let results = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt ? doc.data().createdAt.toDate() : null,
+          updatedAt: doc.data().updatedAt ? doc.data().updatedAt.toDate() : null
+        }));
+        
+        // Sort in memory since we couldn't use orderBy
+        results.sort((a, b) => {
+          if (!a.createdAt) return 1;
+          if (!b.createdAt) return -1;
+          return b.createdAt - a.createdAt;
+        });
+        
+        console.log('Query results (no orderBy):', results.length, 'dealers');
+        return results;
+      }
     }
-  };
+    
+    // Fallback: get all dealers and filter in memory
+    console.log('Fallback: filtering all dealers in memory');
+    const allDealers = await getDealers();
+    
+    let filteredDealers = allDealers;
+    
+    // Apply status filter
+    if (status === 'blank' || status === 'pending') {
+      filteredDealers = filteredDealers.filter(dealer => 
+        !dealer.status || dealer.status === '' || dealer.status === null
+      );
+    } else if (status) {
+      filteredDealers = filteredDealers.filter(dealer => dealer.status === status);
+    }
+    
+    // Apply city filter
+    if (city) {
+      filteredDealers = filteredDealers.filter(dealer => dealer.city === city);
+    }
+    
+    console.log('Memory filtered results:', filteredDealers.length, 'dealers');
+    return filteredDealers;
+    
+  } catch (error) {
+    console.error("Error getting filtered dealers: ", error);
+    // If all else fails, return all dealers
+    const allDealers = await getDealers();
+    console.log('Error fallback: returning all dealers');
+    return allDealers;
+  }
+};
+
 /**
  * Get dealers with blank status
  * @returns {Promise<Array>} Array of dealer objects
  */
-// Make sure this query works correctly
 export const getDealersWithBlankStatus = async () => {
+  try {
+    console.log("Getting dealers with blank status...");
+    
+    // Try with composite index first
     try {
       const q = query(
         collection(db, "dealers"), 
-        where("status", "==", "")
+        where("status", "==", ""),
+        orderBy("createdAt", "desc")
       );
       const querySnapshot = await getDocs(q);
-      
-      // Log the results to see what's returned
-      console.log("Query results:", querySnapshot.docs.length);
-      
-      return querySnapshot.docs.map(doc => ({
+      const results = querySnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
         createdAt: doc.data().createdAt ? doc.data().createdAt.toDate() : null,
         updatedAt: doc.data().updatedAt ? doc.data().updatedAt.toDate() : null
       }));
-    } catch (error) {
-      console.error("Error getting dealers with blank status:", error);
+      
+      console.log(`Found ${results.length} dealers with blank status (indexed query)`);
+      return results;
+    } catch (indexError) {
+      console.log("Error using composite index, trying query without orderBy:", indexError);
+      
+      // Try without orderBy
+      const q2 = query(
+        collection(db, "dealers"), 
+        where("status", "==", "")
+      );
+      const querySnapshot = await getDocs(q2);
+      let results = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt ? doc.data().createdAt.toDate() : null,
+        updatedAt: doc.data().updatedAt ? doc.data().updatedAt.toDate() : null
+      }));
+      
+      // Sort in memory
+      results.sort((a, b) => {
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return b.createdAt - a.createdAt;
+      });
+      
+      console.log(`Found ${results.length} dealers with blank status (non-indexed query)`);
+      return results;
+    }
+  } catch (error) {
+    console.error("Error getting dealers with blank status, trying fallback method:", error);
+    
+    // Fallback to filtering all dealers in memory
+    try {
+      const allDealers = await getDealers();
+      const pendingDealers = allDealers.filter(dealer => 
+        !dealer.status || dealer.status === '' || dealer.status === null
+      );
+      
+      // Sort by created date descending
+      pendingDealers.sort((a, b) => {
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return b.createdAt - a.createdAt;
+      });
+      
+      console.log(`Found ${pendingDealers.length} dealers with blank status (memory filter fallback)`);
+      return pendingDealers;
+    } catch (fallbackError) {
+      console.error("Even fallback method failed:", fallbackError);
       return [];
     }
-  };
+  }
+};
 
 /**
  * Update dealer status
@@ -203,9 +329,10 @@ export const updateDealer = async (dealerId, data) => {
   try {
     const dealerRef = doc(db, "dealers", dealerId);
     
-    // Add updated timestamp
+    // Ensure status is consistently stored as empty string if not provided
     const updatedData = {
       ...data,
+      status: data.status || '', // Convert null/undefined to empty string
       updatedAt: serverTimestamp()
     };
     
@@ -245,7 +372,7 @@ export const getDealerStats = async () => {
     const totalDealers = allDealers.length;
     const verified = allDealers.filter(dealer => dealer.status === 'verified').length;
     const unverified = allDealers.filter(dealer => dealer.status === 'unverified').length;
-    const pending = allDealers.filter(dealer => !dealer.status).length;
+    const pending = allDealers.filter(dealer => !dealer.status || dealer.status === '').length;
     
     // Get unique cities
     const uniqueCities = [...new Set(allDealers.map(dealer => dealer.city))].length;

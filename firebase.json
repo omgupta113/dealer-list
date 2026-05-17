@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "dealerlist",
     "public": "build",
     "ignore": [
       "firebase.json",
